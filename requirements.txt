@@ -2,3 +2,4 @@ apify-client
 python-dotenv
 yfinance
 anthropic
+requests
