@@ -16,6 +16,17 @@ A high-frequency sentiment analysis engine that converts social media noise into
 - 🗄️ **Self-Persisting Data:** No external database is required. Your GitHub repository acts as the persistent data layer by automatically saving updates to `stocks_history.json`.
 - 🔁 **Auto-Commit History:** When data changes, the workflow commits and pushes updates back to `main` automatically.
 
+### 🔑 Setting up GitHub Secrets
+
+Add these 5 repository secrets in GitHub:
+`Settings` -> `Secrets and variables` -> `Actions` -> `New repository secret`
+
+- 🧩 `APIFY_API_TOKEN` - API token for Apify scraping access.
+- 🤖 `ANTHROPIC_API_KEY` - Claude API key for sentiment analysis.
+- 📬 `TELEGRAM_BOT_TOKEN` - Telegram bot token used to send messages.
+- 🆔 `TELEGRAM_CHAT_ID` - Target Telegram chat/user ID that receives reports.
+- 🐦 `TARGET_ACCOUNTS` - Comma-separated list of exactly 3 X handles (example: `aleabitoreddit,zephyr_z9,Julianpetroulas`).
+
 ## ⚙️ Tech Stack
 
 **Python 3.11 | Anthropic API | Apify | yfinance | Requests**
