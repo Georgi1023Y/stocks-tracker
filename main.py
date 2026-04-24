@@ -185,11 +185,10 @@ def _extract_json_array(raw_text: str) -> list[dict[str, str]]:
     raise ValueError("Unable to extract valid JSON array from Claude response.")
 
 
-def _fallback_neutral_analysis(tweets_data: list[dict[str, Any]], reason: str) -> list[dict[str, str]]:
+def _fallback_neutral_analysis(tweets_data: list[dict[str, Any]]) -> list[dict[str, str]]:
     """
     Create safe neutral analysis if Claude refuses or fails.
     """
-    logger.info("Using neutral fallback analysis: %s", reason)
     fallback: list[dict[str, str]] = []
     seen: set[str] = set()
     ticker_pattern = re.compile(r"\$([A-Za-z]{1,5})\b")
@@ -203,7 +202,7 @@ def _fallback_neutral_analysis(tweets_data: list[dict[str, Any]], reason: str) -
                     {
                         "ticker": ticker,
                         "sentiment": "Neutral",
-                        "reasoning": "Automated neutral fallback due to unavailable AI analysis.",
+                        "reasoning": "No model reasoning available.",
                     }
                 )
 
@@ -213,7 +212,7 @@ def _fallback_neutral_analysis(tweets_data: list[dict[str, Any]], reason: str) -
         {
             "ticker": "SPY",
             "sentiment": "Neutral",
-            "reasoning": "No explicit ticker extracted; neutral fallback applied.",
+            "reasoning": "No model reasoning available.",
         }
     ]
 
@@ -231,6 +230,93 @@ def _truncate_telegram_message(text: str, max_length: int = MAX_TELEGRAM_MESSAGE
 
 def _calculate_change_pct(initial_price: float, current_price: float) -> float:
     return ((current_price - initial_price) / initial_price) * 100.0
+
+
+def _get_sentiment_icon(sentiment: str) -> str:
+    normalized = sentiment.strip().lower()
+    if normalized == "bullish":
+        return "🔥"
+    if normalized == "bearish":
+        return "🐻"
+    return "⚖️"
+
+
+def _get_trend_icon(change_pct: float | None) -> str:
+    if change_pct is None:
+        return "🔵"
+    if change_pct > 0:
+        return "📈"
+    if change_pct < 0:
+        return "📉"
+    return "🔵"
+
+
+def _summarize_market_mood(analysis: list[dict[str, Any]]) -> str:
+    if not analysis:
+        return "Market sentiment is mixed with limited directional conviction."
+
+    sentiment_counts = {"bullish": 0, "bearish": 0, "neutral": 0}
+    for item in analysis:
+        sentiment = str(item.get("sentiment", "Neutral")).strip().lower()
+        if sentiment in sentiment_counts:
+            sentiment_counts[sentiment] += 1
+        else:
+            sentiment_counts["neutral"] += 1
+
+    bullish = sentiment_counts["bullish"]
+    bearish = sentiment_counts["bearish"]
+    neutral = sentiment_counts["neutral"]
+
+    if bullish > bearish and bullish >= neutral:
+        return "Risk appetite is constructive, with bullish signals leading today."
+    if bearish > bullish and bearish >= neutral:
+        return "Risk tone is defensive, with bearish signals dominating today."
+    return "Market tone is balanced, with sentiment split across key tickers."
+
+
+def format_telegram_report(
+    analysis: list[dict[str, Any]],
+    prices: dict[str, float | None],
+    performance: list[dict[str, Any]],
+    target_accounts: list[str],
+    run_timestamp: datetime,
+    ai_warning: str | None = None,
+) -> str:
+    """
+    Build a premium HTML Telegram digest.
+    """
+    perf_by_ticker = {entry["ticker"]: entry for entry in performance}
+    lines = ["<b>🏛️ ALPHALOW | MARKET INTELLIGENCE</b>", ""]
+
+    for item in analysis:
+        ticker = str(item.get("ticker", "")).replace("$", "").strip().upper()
+        if not ticker:
+            continue
+
+        sentiment = str(item.get("sentiment", "Neutral")).strip()
+        reasoning = str(item.get("reasoning", "")).strip()
+        current_price = prices.get(ticker)
+        price_text = f"${current_price:.2f}" if current_price is not None else "N/A"
+
+        perf_match = perf_by_ticker.get(ticker)
+        change_value = perf_match["change_pct"] if perf_match is not None else None
+        trend_icon = _get_trend_icon(change_value)
+        trend_text = f"{change_value:+.2f}%" if change_value is not None else "New/Discovery"
+
+        sentiment_icon = _get_sentiment_icon(sentiment)
+        ticker_link = f'<a href="https://finance.yahoo.com/quote/{ticker}">${ticker}</a>'
+        lines.append(f"<b>{ticker_link}</b> | <code>{price_text}</code> | {trend_icon} <b>{trend_text}</b>")
+        lines.append(f"┗ {sentiment_icon} {reasoning}")
+
+    lines.append("---")
+    if ai_warning:
+        lines.append(f"⚠️ <b>AI Note:</b> {ai_warning}")
+    sources_label = ", ".join([f"@{handle}" for handle in target_accounts])
+    timestamp_label = run_timestamp.strftime("%Y-%m-%d %H:%M")
+    lines.append(f"🧠 <b>AI Summary:</b> {_summarize_market_mood(analysis)}")
+    lines.append(f"📊 <b>Sources:</b> {sources_label}")
+    lines.append(f"🕒 <i>Generated: {timestamp_label} UTC</i>")
+    return "\n".join(lines)
 
 
 def _parse_tweet_datetime(raw_value: Any) -> datetime | None:
@@ -352,7 +438,18 @@ def fetch_tweets() -> list[dict[str, Any]]:
     return tweets
 
 
-def analyze_tweets_with_claude(tweets_data: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _classify_anthropic_error(message: str) -> str:
+    lowered = message.lower()
+    if "overload" in lowered or "rate limit" in lowered:
+        return "Overloaded"
+    if "auth" in lowered or "api key" in lowered or "unauthorized" in lowered:
+        return "Authentication Error"
+    if "credit" in lowered or "billing" in lowered or "insufficient" in lowered:
+        return "Insufficient Credits"
+    return "Unknown API Error"
+
+
+def analyze_tweets_with_claude(tweets_data: list[dict[str, Any]]) -> tuple[list[dict[str, str]], str | None]:
     """
     Analyze tweets with Claude and return ticker sentiment data.
     """
@@ -370,17 +467,28 @@ def analyze_tweets_with_claude(tweets_data: list[dict[str, Any]]) -> list[dict[s
     )
 
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if _is_mock_mode_enabled():
+    print(f"DEBUG: API Key found: {bool(os.getenv('ANTHROPIC_API_KEY'))}")
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        print("DEBUG: API Key missing in environment")
+        logger.warning("ANTHROPIC_API_KEY missing from environment; API mode unavailable.")
+
+    # Always prioritize real API when key is present, regardless of MOCK_MODE.
+    if not anthropic_api_key and _is_mock_mode_enabled():
         logger.warning("MOCK_MODE enabled; skipping Claude API and returning mock sentiment.")
-        return [
-            {
-                "ticker": "ARM",
-                "sentiment": "Bullish",
-                "reasoning": "Strong earnings growth and AI demand.",
-            }
-        ]
+        return (
+            [
+                {
+                    "ticker": "ARM",
+                    "sentiment": "Bullish",
+                    "reasoning": "Strong earnings growth and AI demand.",
+                }
+            ],
+            None,
+        )
     if not anthropic_api_key:
-        raise ValueError("Missing ANTHROPIC_API_KEY in .env while MOCK_MODE is disabled.")
+        warning = "Claude API key missing; using neutral fallback analysis."
+        logger.error(warning)
+        return (_fallback_neutral_analysis(tweets_data), warning)
 
     anthropic_client = anthropic.Anthropic(api_key=anthropic_api_key)
 
@@ -392,7 +500,11 @@ def analyze_tweets_with_claude(tweets_data: list[dict[str, Any]]) -> list[dict[s
             messages=[{"role": "user", "content": user_prompt}],
         )
     except Exception as exc:
-        return _fallback_neutral_analysis(tweets_data, f"Claude API unavailable: {exc}")
+        error_text = str(exc)
+        error_type = _classify_anthropic_error(error_text)
+        warning = f"Claude unavailable ({error_type})."
+        logger.error("Claude API error [%s]: %s", error_type, error_text)
+        return (_fallback_neutral_analysis(tweets_data), warning)
 
     try:
         raw_text = "".join(
@@ -400,7 +512,9 @@ def analyze_tweets_with_claude(tweets_data: list[dict[str, Any]]) -> list[dict[s
         ).strip()
         parsed = _extract_json_array(raw_text)
     except Exception as exc:
-        return _fallback_neutral_analysis(tweets_data, f"Claude parse issue: {exc}")
+        warning = "Claude response parse failed; neutral fallback used."
+        logger.error("Claude response parsing failed: %s", exc)
+        return (_fallback_neutral_analysis(tweets_data), warning)
 
     if not isinstance(parsed, list):
         raise ValueError("Claude response must be a JSON list.")
@@ -410,12 +524,14 @@ def analyze_tweets_with_claude(tweets_data: list[dict[str, Any]]) -> list[dict[s
         if not isinstance(item, dict):
             raise ValueError("Each item in Claude response must be a dictionary.")
         if set(item.keys()) != required_keys:
-            return _fallback_neutral_analysis(
-                tweets_data,
-                "Claude response schema mismatch; neutral fallback used.",
+            warning = "Claude response schema mismatch; neutral fallback used."
+            logger.error(
+                "Claude schema mismatch; falling back to neutral analysis. Item keys: %s",
+                list(item.keys()),
             )
+            return (_fallback_neutral_analysis(tweets_data), warning)
 
-    return parsed
+    return parsed, None
 
 
 def get_current_prices(tickers_list: list[str]) -> dict[str, float | None]:
@@ -608,7 +724,7 @@ def main() -> None:
             logger.info("No new data from X accounts. Skipping this run.")
             return
 
-        analysis = analyze_tweets_with_claude(tweets)
+        analysis, ai_warning = analyze_tweets_with_claude(tweets)
         tickers = sorted(
             {
             str(item.get("ticker", "")).replace("$", "").strip().upper()
@@ -629,43 +745,14 @@ def main() -> None:
             save_to_history(normalized_ticker, current_price, sentiment)
 
         performance = get_performance_report()
-
-        timestamp_label = run_timestamp.strftime("%Y-%m-%d %H:%M UTC")
-        accounts_label = ", ".join([f"@{handle}" for handle in target_accounts])
-        lines = [
-            "🏦 MARKET INSIGHT REPORT 🏦",
-            f"🕒 Generated: {timestamp_label}",
-            f"🐦 Sources: {accounts_label}",
-            f"📊 Tweets analyzed: {len(tweets)}",
-            "",
-        ]
-        for item in analysis:
-            ticker = str(item.get("ticker", "")).replace("$", "").strip().upper()
-            sentiment = str(item.get("sentiment", "Neutral")).strip()
-            reasoning = str(item.get("reasoning", "")).strip()
-            current_price = prices.get(ticker)
-            price_text = f"${current_price:.2f}" if current_price is not None else "N/A"
-
-            perf_match = next((entry for entry in performance if entry["ticker"] == ticker), None)
-            if perf_match is not None:
-                change_value = perf_match["change_pct"]
-                trend_emoji = "🟢" if change_value >= 0 else "🔴"
-                change_text = f"{trend_emoji} {change_value:+.2f}%"
-            else:
-                change_text = "⚪ N/A"
-
-            lines.extend(
-                [
-                    f"🚀 ${ticker} | {sentiment}",
-                    f"💰 Price: {price_text}",
-                    f"📈 Trend since first discovery: {change_text}",
-                    f"🧠 AI Analysis: {reasoning}",
-                    "Generated by AlphaFlow AI",
-                    "",
-                ]
-            )
-
-        report_text = "\n".join(lines)
+        report_text = format_telegram_report(
+            analysis=analysis,
+            prices=prices,
+            performance=performance,
+            target_accounts=target_accounts,
+            run_timestamp=run_timestamp,
+            ai_warning=ai_warning,
+        )
         sent_ok = send_telegram_notification(report_text)
         if sent_ok:
             logger.info("Pipeline run completed successfully.")
