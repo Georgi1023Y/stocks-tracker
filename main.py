@@ -304,17 +304,26 @@ def format_telegram_report(
         trend_text = f"{change_value:+.2f}%" if change_value is not None else "New/Discovery"
 
         sentiment_icon = _get_sentiment_icon(sentiment)
-        ticker_link = f'<a href="https://finance.yahoo.com/quote/{ticker}">${ticker}</a>'
-        lines.append(f"<b>{ticker_link}</b> | <code>{price_text}</code> | {trend_icon} <b>{trend_text}</b>")
-        lines.append(f"┗ {sentiment_icon} {reasoning}")
+        safe_ticker = _escape_html_telegram(f"${ticker}")
+        safe_price = _escape_html_telegram(price_text)
+        safe_trend = _escape_html_telegram(trend_text)
+        safe_reasoning = _escape_html_telegram(reasoning)
+
+        lines.append(
+            f"<b>{safe_ticker}</b> | <code>{safe_price}</code> | {trend_icon} {safe_trend}"
+        )
+        if reasoning == "No model reasoning available.":
+            lines.append("┗ ⚖️ <i>Awaiting AI Analysis</i>")
+        else:
+            lines.append(f"┗ {sentiment_icon} {safe_reasoning}")
 
     lines.append("---")
     if ai_warning:
-        lines.append(f"⚠️ <b>AI Note:</b> {ai_warning}")
+        lines.append(f"⚠️ <b>AI Note:</b> {_escape_html_telegram(ai_warning)}")
     sources_label = ", ".join([f"@{handle}" for handle in target_accounts])
     timestamp_label = run_timestamp.strftime("%Y-%m-%d %H:%M")
-    lines.append(f"🧠 <b>AI Summary:</b> {_summarize_market_mood(analysis)}")
-    lines.append(f"📊 <b>Sources:</b> {sources_label}")
+    lines.append(f"🧠 <b>AI Summary:</b> {_escape_html_telegram(_summarize_market_mood(analysis))}")
+    lines.append(f"📊 <b>Sources:</b> {_escape_html_telegram(sources_label)}")
     lines.append(f"🕒 <i>Generated: {timestamp_label} UTC</i>")
     return "\n".join(lines)
 
@@ -593,8 +602,13 @@ def send_telegram_notification(text: str) -> bool:
         return False
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    safe_text = _truncate_telegram_message(_escape_html_telegram(text))
-    payload = {"chat_id": chat_id, "text": safe_text, "parse_mode": "HTML"}
+    safe_text = _truncate_telegram_message(text)
+    payload = {
+        "chat_id": chat_id,
+        "text": safe_text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
 
     try:
         response = requests.post(url, json=payload, timeout=15)
