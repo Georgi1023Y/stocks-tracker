@@ -1,0 +1,8 @@
+2026-04-24 09:04:22,497 | INFO | Starting scrape from configured X accounts.
+2026-04-24 09:04:34,552 | INFO | Primary Apify actor returned 0 items. Trying fallback actor.
+2026-04-24 09:04:58,623 | INFO | Scrape completed with 39 normalized tweets.
+2026-04-24 09:05:00,146 | INFO | HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 400 Bad Request"
+2026-04-24 09:05:00,288 | INFO | Using neutral fallback analysis: Claude API unavailable: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011CaN6HwFBa8Jp2pzqpguJG'}
+2026-04-24 09:05:14,264 | INFO | Telegram notification sent successfully.
+2026-04-24 09:05:14,265 | INFO | Pipeline run completed successfully.
+2026-04-24 09:05:14,266 | INFO | ✅ PIPELINE TEST SUCCESSFUL - MESSAGE SENT

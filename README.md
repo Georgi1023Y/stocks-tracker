@@ -13,3 +13,24 @@ A high-frequency sentiment analysis engine that converts social media noise into
 ## ⚙️ Tech Stack
 
 **Python 3.11 | Anthropic API | Apify | yfinance | Requests**
+
+## ▶️ How to Start
+
+1. Install dependencies:
+   - `pip install -r requirements.txt`
+2. Configure `.env` with your production credentials:
+   - `APIFY_API_TOKEN`
+   - `ANTHROPIC_API_KEY`
+   - `TELEGRAM_BOT_TOKEN`
+   - `TELEGRAM_CHAT_ID`
+   - `TARGET_ACCOUNTS` (exactly 3 X handles, comma-separated)
+   - Optional: `MOCK_MODE`, `APIFY_TIMEOUT_SECONDS`, `TWEETS_PER_ACCOUNT`
+3. Run the bot:
+   - `python main.py`
+4. Review outputs:
+   - Runtime logs: `production.log`
+   - Performance history: `stocks_history.json`
+
+## ⚠️ Disclaimer
+
+This software is a data processing and reporting tool. It is not a financial advice engine, does not provide investment recommendations, and should not be used as the sole basis for trading or portfolio decisions.
