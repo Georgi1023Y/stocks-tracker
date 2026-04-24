@@ -10,6 +10,12 @@ A high-frequency sentiment analysis engine that converts social media noise into
 - 📂 **Smart Persistence:** JSON-based history tracking to monitor performance over time.
 - 📱 **Telegram Delivery:** Instant professional reports sent directly to the user.
 
+## 💎 Pro Features
+
+- 🤖 **Daily Automation:** GitHub Actions runs the pipeline every day at 08:00 UTC (plus manual trigger support).
+- 🗄️ **Self-Persisting Data:** No external database is required. Your GitHub repository acts as the persistent data layer by automatically saving updates to `stocks_history.json`.
+- 🔁 **Auto-Commit History:** When data changes, the workflow commits and pushes updates back to `main` automatically.
+
 ## ⚙️ Tech Stack
 
 **Python 3.11 | Anthropic API | Apify | yfinance | Requests**
