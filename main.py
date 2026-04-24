@@ -232,6 +232,35 @@ def _truncate_telegram_message(text: str, max_length: int = MAX_TELEGRAM_MESSAGE
 def _calculate_change_pct(initial_price: float, current_price: float) -> float:
     return ((current_price - initial_price) / initial_price) * 100.0
 
+
+def _parse_tweet_datetime(raw_value: Any) -> datetime | None:
+    """
+    Parse tweet timestamp into UTC datetime when possible.
+    """
+    if not raw_value:
+        return None
+    if isinstance(raw_value, datetime):
+        return raw_value.astimezone(timezone.utc)
+
+    text = str(raw_value).strip()
+    if not text:
+        return None
+
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text).astimezone(timezone.utc)
+    except ValueError:
+        pass
+
+    for fmt in ("%a %b %d %H:%M:%S %z %Y", "%Y-%m-%d %H:%M:%S%z"):
+        try:
+            return datetime.strptime(text, fmt).astimezone(timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
 def fetch_tweets() -> list[dict[str, Any]]:
     """
     Fetch recent tweets for the configured accounts and return normalized output.
@@ -243,100 +272,81 @@ def fetch_tweets() -> list[dict[str, Any]]:
     client = ApifyClient(token)
 
     handles = _parse_target_accounts()
-    per_account_limit = int(os.getenv("TWEETS_PER_ACCOUNT", "5"))
-    search_query = " OR ".join([f"from:{handle}" for handle in handles])
-
+    raw_limit = int(os.getenv("TWEETS_PER_ACCOUNT", "10"))
+    per_account_limit = max(5, min(raw_limit, 10))
     now_utc = datetime.now(timezone.utc)
     since_utc = now_utc - timedelta(hours=24)
 
-    run_input = {
-        "searchQueries": [search_query],
-        "searchTerms": [search_query],
-        "queries": [search_query],
-        "query": search_query,
-        "type": "Latest",
-        "searchType": "Latest",
-        "sort": "Latest",
-        "tweetsDesired": per_account_limit,
-        "maxItems": per_account_limit,
-        "maxTweets": per_account_limit,
-        "since": since_utc.isoformat(),
-        "until": now_utc.isoformat(),
-    }
+    logger.info("Starting profile timeline scraping for configured X accounts.")
+    actor_id = "khadinakbar/x-tweet-scraper"
+    tweets: list[dict[str, Any]] = []
+    allowed_handles = {_normalize_handle(handle) for handle in handles}
 
-    logger.info("Starting scrape from configured X accounts.")
-    run = _run_with_timeout(
-        lambda: client.actor("shanes/tweet-flash").call(run_input=run_input),
-        APIFY_TIMEOUT_SECONDS,
-        "Apify actor shanes/tweet-flash call",
-    )
-    dataset_items = _run_with_timeout(
-        lambda: list(client.dataset(run["defaultDatasetId"]).iterate_items()),
-        APIFY_TIMEOUT_SECONDS,
-        "Apify dataset iteration",
-    )
-
-    if not dataset_items:
-        logger.info("Primary Apify actor returned 0 items. Trying fallback actor.")
-        fallback_input = {
-            "searchQueries": [search_query],
-            "searchTerms": [search_query],
-            "searches": [search_query],
-            "query": search_query,
-            "searchType": "Latest",
-            "sort": "Latest",
-            "sortType": "Latest",
-            "mode": "Latest",
+    for handle in handles:
+        profile_input = {
+            "handles": [handle],
+            "usernames": [handle],
+            "profiles": [handle],
             "maxItems": per_account_limit,
+            "maxTweets": per_account_limit,
             "tweetsDesired": per_account_limit,
+            "sort": "Latest",
+            "searchType": "Latest",
             "since": since_utc.isoformat(),
             "until": now_utc.isoformat(),
         }
-        fallback_run = _run_with_timeout(
-            lambda: client.actor("khadinakbar/x-tweet-scraper").call(
-                run_input=fallback_input
-            ),
+
+        logger.info("Scraping timeline for @%s", handle)
+        run = _run_with_timeout(
+            lambda: client.actor(actor_id).call(run_input=profile_input),
             APIFY_TIMEOUT_SECONDS,
-            "Apify actor khadinakbar/x-tweet-scraper call",
+            f"Apify actor {actor_id} call for @{handle}",
         )
         dataset_items = _run_with_timeout(
-            lambda: list(client.dataset(fallback_run["defaultDatasetId"]).iterate_items()),
+            lambda: list(client.dataset(run["defaultDatasetId"]).iterate_items()),
             APIFY_TIMEOUT_SECONDS,
-            "Apify fallback dataset iteration",
+            f"Apify dataset iteration for @{handle}",
         )
 
-    tweets: list[dict[str, Any]] = []
-    allowed_handles = {_normalize_handle(handle) for handle in handles}
-    for item in dataset_items:
-        author_data = item.get("author") or item.get("user") or {}
-        author_name: Any = None
-        if isinstance(author_data, dict):
-            author_name = (
-                author_data.get("userName")
-                or author_data.get("username")
-                or author_data.get("screen_name")
+        handle_tweets = 0
+        for item in dataset_items:
+            author_data = item.get("author") or item.get("user") or {}
+            author_name: Any = None
+            if isinstance(author_data, dict):
+                author_name = (
+                    author_data.get("userName")
+                    or author_data.get("username")
+                    or author_data.get("screen_name")
+                )
+            elif isinstance(author_data, str):
+                author_name = author_data
+
+            resolved_author = (
+                author_name
+                or item.get("author_handle")
+                or item.get("author_name")
+                or item.get("authorName")
+                or item.get("screen_name")
+                or item.get("username")
             )
-        elif isinstance(author_data, str):
-            author_name = author_data
+            if resolved_author and _normalize_handle(str(resolved_author)) not in allowed_handles:
+                continue
 
-        resolved_author = (
-            author_name
-            or item.get("author_handle")
-            or item.get("author_name")
-            or item.get("authorName")
-            or item.get("screen_name")
-            or item.get("username")
-        )
-        if resolved_author and _normalize_handle(str(resolved_author)) not in allowed_handles:
-            continue
+            created_at = item.get("created_at") or item.get("createdAt")
+            created_dt = _parse_tweet_datetime(created_at)
+            if created_dt is not None and created_dt < since_utc:
+                continue
 
-        tweets.append(
-            {
-                "full_text": item.get("full_text") or item.get("text") or item.get("fullText"),
-                "author": resolved_author,
-                "created_at": item.get("created_at") or item.get("createdAt"),
-            }
-        )
+            tweets.append(
+                {
+                    "full_text": item.get("full_text") or item.get("text") or item.get("fullText"),
+                    "author": resolved_author or handle,
+                    "created_at": created_at,
+                }
+            )
+            handle_tweets += 1
+            if handle_tweets >= per_account_limit:
+                break
 
     logger.info("Scrape completed with %d normalized tweets.", len(tweets))
     return tweets
